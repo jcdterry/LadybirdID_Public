@@ -1,0 +1,874 @@
+---
+title: "Repeatedly testing quality of fit"
+output: 
+  html_document: 
+    toc: yes
+---
+
+```{r}
+# setwd("~/LadybirdID/Scripts")
+library(keras)
+library(tidyverse)
+
+BatchSize <- 32
+
+read_csv('../Data/Metadata_Labels.csv' )[,-1]%>%
+  select(id,
+         lat, long, doy, 
+         TempLag14:TempLag1,
+         Week1:Week8 , 
+         Broadleaved_woodland:Suburban,
+         STD_Recs, 
+         Lab_Adaliabipunctata: Lab_Tytthaspissedecimpunctata
+  )-> metadata
+
+K<- backend()
+
+source('MovingIntoSortedFolders.R') # Load function
+```
+
+## Splitting Data and Running Each Suite of Models
+
+```{r eval=FALSE}
+
+metadata_full<- metadata
+BatchSize <- 32
+L_Meta_Secn <- 47
+
+NAremover <- function(x){
+  x[is.na(x)] <-0
+  return(x)
+}
+
+for( RUN in 1:6){
+  try({
+    
+    set.seed(RUN)
+    
+    print(paste0('Starting Batch', RUN))
+    metadata_full<- metadata
+    
+    IMAGE_SOURCE <- paste0('../../Images/Batch_TVT',RUN,'/')
+    BatchSize <- 32
+    
+    MoveAllImagesIntoFolders(base_dir = paste0('../../Images/Batch_TVT',RUN),
+                             Source ='../../Images/SquareImages/',
+                             SourceTable = metadata_full,
+                             split = c(0.7, 0.15, 0.15))
+    
+    ### Adding UpSampling and down sampling
+    
+    source('UpSampling.R')
+    UpSampling(TargetTrainSize = 2000, RootDir = paste0('../../Images/Batch_TVT',RUN,'/train/'))
+    source('DownSampling.R')
+    DownSampling(TargetTrainSize = 2000, RootDir = paste0('../../Images/Batch_TVT',RUN,'/train/'))
+    
+    ### Dealing with overhang:
+    
+    ### Train 
+    AllTrainImages<-list.files(paste0('../../Images/Batch_TVT',RUN,'/train/'),
+                               recursive = TRUE)
+    
+    Overhang<-length(AllTrainImages)%% BatchSize
+    if(Overhang !=0){warning('batchsize not a multiple of training data - may get out of sync, so remove a few harlequins')
+      ### Remove harlequins to make batch size fit nicely
+      AllHarl<-list.files(paste0('../../Images/Batch_TVT',RUN,'/train/Harmonia axyridis/'))
+      file.remove(paste0(paste0('../../Images/Batch_TVT',RUN,'/train/Harmonia axyridis/'),
+                         AllHarl[sample.int(length(AllHarl), Overhang )]))
+    }
+    
+    ### Valid
+    
+    AllValidImages<-list.files(paste0('../../Images/Batch_TVT',RUN,'/validation/'),
+                               recursive = TRUE)
+    
+    Overhang<-length(AllValidImages)%% BatchSize
+    if(Overhang !=0){warning('batchsize not a multiple of validation data - may get out of sync, so removing a few harlequins')
+      ### Remove harlequins to make batch size fit nicely
+      AllHarl<-list.files(paste0('../../Images/Batch_TVT',RUN,'/validation/Harmonia axyridis/'))
+      file.remove(paste0(paste0('../../Images/Batch_TVT',RUN,'/validation/Harmonia axyridis/'),
+                         AllHarl[sample.int(length(AllHarl), Overhang )]))
+    }
+    
+    ### Test
+    AllValidImages<-list.files(paste0('../../Images/Batch_TVT',RUN,'/test/'),
+                               recursive = TRUE)
+    
+    Overhang<-length(AllValidImages)%% BatchSize
+    if(Overhang !=0){warning('batchsize not a multiple of test data - may get out of sync, so removing a few harlequins')
+      ### Remove harlequins to make batch size fit nicely
+      AllHarl<-list.files(paste0('../../Images/Batch_TVT',RUN,'/test/Harmonia axyridis/'))
+      file.remove(paste0(paste0('../../Images/Batch_TVT',RUN,'/test/Harmonia axyridis/'),
+                         AllHarl[sample.int(length(AllHarl), Overhang )]))
+    }
+    
+    ##### Making Speedy metadata generators
+    
+    source('Gen_Meta_ForConstructingSpeedy.R')
+    
+    
+    AllTrainImages<-list.files(paste0(IMAGE_SOURCE, 'train/'), recursive = TRUE)
+    AllValidImages<-list.files(paste0(IMAGE_SOURCE, 'validation/'), recursive = TRUE)
+    AllTestImages<-list.files(paste0(IMAGE_SOURCE, 'test/'), recursive = TRUE)
+    
+    TrainingStepsPerEpoch = length(AllTrainImages)/BatchSize 
+    ValidateStepsPerEpoch = length(AllValidImages)/BatchSize 
+    TestSteps = length(AllTestImages)/BatchSize 
+    
+    
+    Meta_Training <-map(1:TrainingStepsPerEpoch,function(x){cat(x);Gen_Meta_Train()})
+    Pre_AccessedMetadata_train <- transpose(Meta_Training)
+    
+    
+    Meta_Valid <-map(1:ValidateStepsPerEpoch,function(x){cat(x);Gen_Meta_Valid()})
+    Pre_AccessedMetadata_valid <- transpose(Meta_Valid)
+    
+    
+    Meta_Test<-map(1:TestSteps,function(x){cat(x);Gen_Meta_Test()})
+    Pre_AccessedMetadata_test <- transpose(Meta_Test)
+    
+    
+    save( Pre_AccessedMetadata_train, file = paste0('../Data/Pre_AccessedMetadata_Label_train_TVT', RUN))
+    save( Pre_AccessedMetadata_test,file =  paste0('../Data/Pre_AccessedMetadata_Label_test_TVT', RUN))
+    save( Pre_AccessedMetadata_valid,file =  paste0('../Data/Pre_AccessedMetadata_Label_valid_TVT', RUN))
+    
+    
+    
+    load(paste0('../Data/Pre_AccessedMetadata_Label_train_TVT', RUN))
+    load(file =  paste0('../Data/Pre_AccessedMetadata_Label_valid_TVT', RUN))
+    load(file =  paste0('../Data/Pre_AccessedMetadata_Label_test_TVT', RUN))
+    
+    ## Need to fill in vary occasional temperature NAs with 0 
+    
+    Pre_AccessedMetadata_train[[1]] <- map(Pre_AccessedMetadata_train[[1]], NAremover)
+    Pre_AccessedMetadata_valid[[1]] <- map(Pre_AccessedMetadata_valid[[1]], NAremover)
+    Pre_AccessedMetadata_test[[1]]  <- map(Pre_AccessedMetadata_test[[1]] , NAremover)
+    
+    Gen_Meta_Speedy_train_counter <-1
+    Gen_Meta_Speedy_valid_counter<-1
+    
+    ## Image and Both Generator Functions
+    source('Gen_Image_TVT.R')
+    
+    ### Metadata only generator functions
+    source('Gen_Meta_All_PSL.R') # Differently sized speedy metagenerators
+    
+    ### Function for model fitting
+    source('FinalModelMaker6.R')
+    
+    FitFinalModel6( lr =  list('IM1'=1e-4,
+                               'IM2'= 1e-5,
+                               'M1'= 1e-3,
+                               'M2'= 1e-3,
+                               'B1'= 1e-4,
+                               'B2'= 1e-5),
+                    epochs =list('IM1' = 5,
+                                 'IM2'=20,
+                                 'M1'=100,
+                                 'M2'=100,
+                                 'B1'= 5,
+                                 'B2'= 20),
+                    FolderName = paste0('TVT_Batch_',RUN))  
+  })
+}
+
+```
+
+
+## Quality of Fit and Validation models for ensemble weighting
+
+```{r eval=FALSE}
+
+NAremover <- function(x){
+  x[is.na(x)] <-0
+  return(x)
+}
+
+
+for( RUN in 1:5){
+  try({
+    
+    ModelSet<-paste0('TVT_Batch_',RUN)
+    
+    
+    print(paste0('Starting Batch', RUN))
+    IMAGE_SOURCE <- paste0('../../Images/Batch_TVT',RUN,'/')
+    
+    AllValidImages<-list.files(paste0(IMAGE_SOURCE, 'validation/'), recursive = TRUE)
+    AllTestImages<-list.files(paste0(IMAGE_SOURCE, 'test/'), recursive = TRUE)
+    
+    ValidateStepsPerEpoch = length(AllValidImages)/BatchSize 
+    TestSteps = length(AllTestImages)/BatchSize 
+    
+    
+    ## Image and Both Generator Functions
+    source('Gen_Image_TVT.R')
+    source('Gen_TEST.R')
+    
+    ### Metadata only generator functions
+    source('Gen_Meta_All_PSL.R') # Differently sized speedy metagenerators
+    
+    Gen_Meta_Speedy_train_counter <-1
+    Gen_Meta_Speedy_valid_counter<-1
+    
+    ### Test Set Results
+    
+    TestOnBatch<-function(i){
+      # takes Gen_Both_Valid,  both_model, image_model and meta_model from the global
+      
+      
+      Test_data<-Gen_Both_Test()
+      
+      i_predictions<-as.data.frame(predict(image_model,Test_data[[1]][[1]]))
+      mp_predictions<-as.data.frame(predict(meta_prim_model,Test_data[[1]][[2]][,1:3]))
+      ms_predictions<-as.data.frame(predict(meta_secn_model,Test_data[[1]][[2]][,1:47]))
+      
+      Test_data[[1]][[2]] <-  Test_data[[1]][[2]][,1:47] # Trim Metadata to size for both model
+      b_predictions<-as.data.frame(predict(both_model,Test_data[[1]]))
+      
+      
+      TRUTH<- apply(Test_data[[2]], 1, which.max)    
+      cat('.')
+      
+      predictions <- list('both'=b_predictions,
+                          'image'=i_predictions,
+                          'meta_p'= mp_predictions,
+                          'meta_s'= ms_predictions,
+                          'truth' =  TRUTH)
+      
+      return(predictions)
+    }
+    
+    
+    both_model<- load_model_hdf5(paste0('../../', ModelSet,'/Both_Model_S2'))
+    image_model<-load_model_hdf5(paste0('../../', ModelSet,'/Image_Model_S2'))
+    meta_prim_model<- load_model_hdf5(paste0('../../', ModelSet,'/Meta_Model_Prim'))
+    meta_secn_model<- load_model_hdf5(paste0('../../', ModelSet,'/Meta_Model_Secn'))
+    
+    all_TestResults<-map(1:TestSteps, TestOnBatch)
+    save(all_TestResults, file=paste0('../Data/',ModelSet,'TestResultsEnd'))
+    
+    ##### Results for Validation
+    
+    TestOnBatch_validation<-function(i){
+      # takes Gen_Both_Valid,  both_model, image_model and meta_model from the global
+      
+      Test_data<-Gen_Both_Valid()
+      
+      i_predictions<-as.data.frame(predict(image_model,Test_data[[1]][[1]]))
+      mp_predictions<-as.data.frame(predict(meta_prim_model,Test_data[[1]][[2]][,1:3]))
+      ms_predictions<-as.data.frame(predict(meta_secn_model,Test_data[[1]][[2]][,1:47]))
+      
+      TRUTH<- apply(Test_data[[2]], 1, which.max)    
+      cat('.')
+      
+      predictions <- list('image'=i_predictions,
+                          'meta_p'= mp_predictions,
+                          'meta_s'= ms_predictions,
+                          'truth' =  TRUTH)
+      
+      return(predictions)
+    }
+    
+    ValidationTestResults<-map(1:ValidateStepsPerEpoch, TestOnBatch_validation)
+    save(ValidationTestResults, file=paste0('../Data/',ModelSet,'ValidationTestResultsEnd'))
+    
+  })
+} 
+
+```
+
+### Testing Ensemble models
+
+
+
+
+```{r}
+Names<-data.frame('Name' =sort(unique(read_csv('../Data/Metadata_Labels.csv' )$Latin_Name)), 
+                  stringsAsFactors = FALSE)
+
+Name_id <-rowid_to_column(Names,var = 'SpN')
+
+```
+
+```{r eval=FALSE}
+
+
+
+RankPredictions<-function(Predictions, Truth){
+  
+  TestResults<- data.frame('TRUTH' = Truth)
+  TestResults$Predicted <-max.col(Predictions)
+  TestResults$Top1 <- TestResults$Predicted == Truth
+  
+  Predict_T <- bind_cols(Predictions,'TR'=Truth )
+  TestResults$Top2 <-apply(Predict_T, 1,function(x){x[19] %in% which(rank(x[-19])>=17)})
+  TestResults$Top3 <-apply(Predict_T, 1,function(x){x[19] %in% which(rank(x[-19])>=16)})
+  TestResults$Top5 <-apply(Predict_T, 1,function(x){x[19] %in% which(rank(x[-19])>=14)})
+  
+  Overall<-  summarise(TestResults,
+                       Top1Acc =mean(Top1)*100,
+                       Top2Acc = mean(Top2)*100,
+                       Top3Acc = mean(Top3)*100,
+                       Top5Acc = mean(Top5)*100,
+                       Count = nrow(TestResults),
+                       True_Name = 'Overall')
+  TestResults%>%
+    rename(Species = TRUTH)%>%
+    group_by(Species)%>%
+    summarise(Top1Acc =mean(Top1)*100,
+              Top2Acc = mean(Top2)*100,
+              Top3Acc = mean(Top3)*100,
+              Top5Acc = mean(Top5)*100)-> BySpecies
+  
+  BySpecies$Count<-count(TestResults,TRUTH)$n
+  
+  BySpecies$True_Name = Names$Name   
+  
+  bind_rows(Overall, BySpecies)%>%
+    select(-Species)%>%
+    rename(Species =True_Name )%>%
+    select(Species, Count, Top1Acc, Top2Acc, Top3Acc, Top5Acc)%>%
+    return()
+}
+
+Test_Ensemble<-function(RUN){
+  
+  ModelSet<-paste0('TVT_Batch_',RUN)
+  print(paste0('Starting Batch', RUN))
+  IMAGE_SOURCE <- paste0('../../Images/Batch_TVT',RUN,'/')
+  AllValidImages<-list.files(paste0(IMAGE_SOURCE, 'validation/'), recursive = TRUE)
+  ValidateStepsPerEpoch = length(AllValidImages)/BatchSize 
+  
+  load(file=paste0('../Data/',ModelSet,'ValidationTestResultsEnd'))
+  
+  T_res_VAL<-transpose(ValidationTestResults)
+  
+  Truth_VAL<-unlist(T_res_VAL$truth)
+  Val_Img_Predict<-do.call(bind_rows, T_res_VAL$image)
+  Val_Meta_Secn_Predict<-do.call(bind_rows, T_res_VAL$meta_s)
+  
+  m_i_TABLE<-data.frame('m_i' = seq(0, 1, by =0.05),
+                        'RUN' = RUN,
+                        'Acc' = NA)
+  
+  for(i in 1:nrow(m_i_TABLE) ){
+    
+    m_i<- m_i_TABLE$m_i[i]
+    Ensb_Predict<-((1-m_i)*Val_Img_Predict +( m_i*Val_Meta_Secn_Predict))*0.5
+    m_i_TABLE$Acc[i]<- round(RankPredictions(Ensb_Predict, Truth_VAL)$Top1Acc[19], 3)
+  }
+  
+  return(m_i_TABLE)
+}
+
+```
+
+
+```{r eval=FALSE}
+EnsembleOptim<-map_df(1:5, Test_Ensemble)
+
+spread(EnsembleOptim, RUN, Acc)
+
+```
+
+## Making Results Tables
+
+```{r eval=FALSE}
+m_i_Secn = 0.5 # consistently good
+
+GenResultsTables<- function(RUN){
+  
+  ModelSet<-paste0('TVT_Batch_',RUN)
+  print(paste0('Starting Batch', RUN))
+  IMAGE_SOURCE <- paste0('../../Images/Batch_TVT',RUN,'/')
+  AllTestImages<-list.files(paste0(IMAGE_SOURCE, 'test/'), recursive = TRUE)
+  TestSteps = length(AllTestImages)/BatchSize 
+  
+  load(paste0('../Data/',ModelSet,'TestResultsEnd'))
+  
+  prediction_list<- all_TestResults
+  
+  T_res<-transpose(prediction_list)
+  
+  Truth<-unlist(T_res$truth)
+  
+  Both_Predict<-do.call(bind_rows, T_res$both)
+  Img_Predict<-do.call(bind_rows, T_res$image)
+  Meta_Prim_Predict<-do.call(bind_rows, T_res$meta_p)
+  Meta_Secn_Predict<-do.call(bind_rows, T_res$meta_s)
+  Ensb_Secn_Predict<-((1-m_i_Secn)*Img_Predict +( m_i_Secn*Meta_Secn_Predict))*0.5
+  
+  B_Acc <- RankPredictions(Both_Predict, Truth)
+  I_Acc <- RankPredictions(Img_Predict, Truth)
+  MP_Acc<- RankPredictions(Meta_Prim_Predict, Truth)
+  MS_Acc<- RankPredictions(Meta_Secn_Predict, Truth)
+  ES_Acc<- RankPredictions(Ensb_Secn_Predict, Truth)
+  
+  PP<-I_Acc$Count[-1]/I_Acc$Count[1]
+  PP_mat<-matrix(PP, nrow = nrow(Both_Predict), ncol=18,byrow = TRUE)
+  
+  B_Acc_W<- RankPredictions(Both_Predict*PP_mat, Truth)
+  I_Acc_W<- RankPredictions(Img_Predict*PP_mat, Truth)
+  MS_Acc_W<- RankPredictions(Meta_Secn_Predict*PP_mat, Truth)
+  MP_Acc_W<- RankPredictions(Meta_Prim_Predict*PP_mat, Truth)
+  ES_Acc_W<- RankPredictions(Ensb_Secn_Predict*PP_mat, Truth)
+  
+  return(list('B_Acc'=B_Acc,
+              'I_Acc'=I_Acc,  
+              'MP_Acc'=MP_Acc,  
+              'MS_Acc'=MS_Acc  , 
+              'ES_Acc'=ES_Acc,
+              'B_Acc_W'=B_Acc_W,
+              'I_Acc_W'=I_Acc_W, 
+              'MP_Acc_W'=MP_Acc_W,
+              'MS_Acc_W'=MS_Acc_W, 
+              'ES_Acc_W'=ES_Acc_W ))
+  
+}
+
+All5ResultTables<-map(1:5, GenResultsTables)
+
+save(All5ResultTables,file= '../Data/All5FinalResultsTables')
+```
+
+
+```{r}
+pos.which.max<- function(x){
+  if(all(x==0)){return(19)}
+  which.max(x)
+}
+
+read_csv('../Data/Metadata_Labels.csv' )[,-1]%>%
+  select(id,Latin_Name, Lab_Adaliabipunctata: Lab_Tytthaspissedecimpunctata
+  )-> Labels_all
+
+data.frame('Label' =apply(Labels_all[,3:20], 1, pos.which.max), 
+           'Truth' = Labels_all$Latin_Name)%>%
+  left_join(Name_id, by = c( 'Label'= 'SpN') )%>%
+  mutate(LabelSp = ifelse(is.na(Name), 'Other Name', Name))%>%
+  select(LabelSp, Truth)%>%
+  mutate(Correct = LabelSp==Truth)%>%
+  group_by(Truth)%>%
+  summarise(FracCorrect = mean(Correct)*100)-> CitzSciAcc
+```
+
+## Average Tables
+
+```{r}
+load('../Data/All5FinalResultsTables')
+
+SeparateMasterTables<- function(RUN){
+  
+  bind_cols(bind_rows(data.frame('Truth'='Overall',
+                                 FracCorrect =0.9236913*100 ), 
+                      CitzSciAcc)%>%
+              rename(Species = Truth, `Citizen Scientist Accuracy`=FracCorrect),
+            select(All5ResultTables[[RUN]]$MP_Acc,Count ,MP1 = Top1Acc ), 
+            select(All5ResultTables[[RUN]]$MS_Acc,MS1=Top1Acc ), 
+            select(All5ResultTables[[RUN]]$I_Acc,I1=Top1Acc), 
+            select(All5ResultTables[[RUN]]$B_Acc,B1=Top1Acc ),
+            select(All5ResultTables[[RUN]]$ES_Acc,E1=Top1Acc))%>%
+    mutate(`Relative Frequency` = Count/5952*100)%>%
+    select(   Species, `Relative Frequency`, `Citizen Scientist Accuracy`, MP1:E1)->XX
+  
+  return(XX)
+  
+}
+
+SeparateMasterTables_List<-map(1:5, SeparateMasterTables)
+
+One<-SeparateMasterTables_List[[1]][,4:8]
+Two<-SeparateMasterTables_List[[2]][,4:8]
+Thr<-SeparateMasterTables_List[[3]][,4:8]
+Fou<-SeparateMasterTables_List[[4]][,4:8]
+Fiv<-SeparateMasterTables_List[[5]][,4:8]
+
+
+AverageAccuracy<-bind_cols(SeparateMasterTables_List[[1]][,1:3], (One + Two+ Thr+Fou+Fiv)/5)
+
+
+knitr::kable(AverageAccuracy, digits = 1)
+```
+
+
+
+### All tables
+
+```{r}
+SeparateMasterTables_List
+```
+
+### Top3Accuracues
+
+```{r message=FALSE, warning=FALSE}
+load('../Data/All5FinalResultsTables')
+
+SeparateMasterTables_top3<- function(RUN){
+  
+  bind_cols(bind_rows(data.frame('Truth'='Overall',
+                                 FracCorrect =0.9236913*100 ), 
+                      CitzSciAcc)%>%
+              rename(Species = Truth, `Citizen Scientist Accuracy`=FracCorrect),
+            select(All5ResultTables[[RUN]]$MP_Acc,Count ,MP3 = Top3Acc ), 
+            select(All5ResultTables[[RUN]]$MS_Acc,MS3=Top3Acc ), 
+            select(All5ResultTables[[RUN]]$I_Acc,I3=Top3Acc), 
+            select(All5ResultTables[[RUN]]$B_Acc,B3=Top3Acc ),
+            select(All5ResultTables[[RUN]]$ES_Acc,E3=Top3Acc))%>%
+    mutate(`Relative Frequency` = Count/5952*100)%>%
+    select(   Species, `Relative Frequency`, `Citizen Scientist Accuracy`, MP3:E3)->XX
+  
+  return(XX)
+  
+}
+
+SeparateMasterTables_List_top3<-map(1:5, SeparateMasterTables_top3)
+
+One<-SeparateMasterTables_List_top3[[1]][,4:8]
+Two<-SeparateMasterTables_List_top3[[2]][,4:8]
+Thr<-SeparateMasterTables_List_top3[[3]][,4:8]
+Fou<-SeparateMasterTables_List_top3[[4]][,4:8]
+Fiv<-SeparateMasterTables_List_top3[[5]][,4:8]
+
+
+AverageAccuracy_Top3<-bind_cols(SeparateMasterTables_List_top3[[1]][,1:3], (One + Two+ Thr+Fou+Fiv)/5)
+
+
+knitr::kable(AverageAccuracy_Top3, digits = 1)
+```
+
+# Correlations between accuracies
+
+```{r}
+
+cor.test(AverageAccuracy$`Citizen Scientist Accuracy` , AverageAccuracy$B1, method='spearman') 
+cor.test(AverageAccuracy$`Relative Frequency`, AverageAccuracy$`Citizen Scientist Accuracy` , method='spearman') 
+cor.test(AverageAccuracy$`Relative Frequency`, AverageAccuracy$B1 , method='spearman') 
+cor.test(AverageAccuracy$MS1, AverageAccuracy$B1, method='spearman') 
+cor.test(AverageAccuracy$MS1, AverageAccuracy$MP1, method='spearman') 
+
+```
+
+### Plot
+
+```{r}
+
+map_df( 1:5, function(RUN){
+  yy<- SeparateMasterTables_List[[RUN]][1,]
+  yy$RUN <- RUN
+  return(yy)
+})%>%
+  select(- Species, -`Relative Frequency`, -`Citizen Scientist Accuracy` )%>%
+  group_by(RUN)%>%
+  gather(Metric,Accuracy,  MP1:E1 )%>%
+  filter(Metric %in% c('I1','E1', 'B1'))-> OverallResults
+
+map_df( 1:5, function(RUN){
+  yy<- SeparateMasterTables_List_top3[[RUN]][1,]
+  yy$RUN <- RUN
+  return(yy)
+})%>%
+  select(- Species, -`Relative Frequency`, -`Citizen Scientist Accuracy` )%>%
+  group_by(RUN)%>%
+  gather(Metric,Accuracy,  MP3:E3 )%>%
+  mutate(Top3Acc = Accuracy)%>%
+  filter(Metric %in% c('I3','E3', 'B3'))-> OverallResults_Top3
+
+
+
+OverallResults$Top3Acc <- OverallResults_Top3$Top3Acc
+
+OverallResults
+
+OverallResults%>%
+  ungroup()%>%
+  group_by(Metric)%>%
+  summarise(mean(Accuracy), mean(Top3Acc))
+
+ggplot(OverallResults,aes(y = Accuracy,x=Metric, group=RUN))+
+  geom_line()+
+  geom_point(aes( col=Metric))+
+  scale_x_discrete(limits = c('I1','E1', 'B1' ),
+                   labels = c('Image', 'Ensemble', 'Combined'))+
+  xlab('Model')+
+  ylab('Top-1 Test Set Accuracy')+
+  guides(col=FALSE)+
+  theme_classic()-> Top1
+
+Top1
+
+ggsave('../Figures/Comparison OfAccuracies.png', width = 4, height = 4, units='in')
+ggsave('../Figures/Comparison OfAccuracies.pdf', width = 4, height = 4, units='in')
+
+
+ggplot(OverallResults,aes(y = Top3Acc,x=Metric, group=RUN))+
+  geom_line()+
+  geom_point(aes( col=Metric))+
+  scale_x_discrete(limits = c('I1','E1', 'B1' ),
+                   labels = c('Image', 'Ensemble', 'Combined'))+
+  xlab('Model')+
+  ylab('Top-3 Test Set Accuracy')+
+  guides(col=FALSE, y=FALSE)+
+  theme_classic() -> Top3Plot
+
+cowplot::plot_grid(Top1, Top3Plot, labels = 'auto')
+
+ggsave('../Figures/Comparison OfAccuracies13.png', width = 6, height = 4, units='in')
+ggsave('../Figures/Comparison OfAccuracies13.pdf', width = 6, height = 4, units='in')
+
+
+```
+
+### Weighted Performance:
+
+
+```{r}
+load('../Data/All5FinalResultsTables')
+
+SeparateMasterTablesW<- function(RUN){
+  
+  bind_cols(bind_rows(data.frame('Truth'='Overall',
+                                 FracCorrect =0.9236913*100 ), 
+                      CitzSciAcc)%>%
+              rename(Species = Truth, `Citizen Scientist Accuracy`=FracCorrect),
+            select(All5ResultTables[[RUN]]$MP_Acc_W,Count ,MP1 = Top1Acc ), 
+            select(All5ResultTables[[RUN]]$MS_Acc_W,MS1=Top1Acc ), 
+            select(All5ResultTables[[RUN]]$I_Acc_W,I1=Top1Acc), 
+            select(All5ResultTables[[RUN]]$B_Acc_W,B1=Top1Acc ),
+            select(All5ResultTables[[RUN]]$ES_Acc_W,E1=Top1Acc))%>%
+    mutate(`Relative Frequency` = Count/5952*100)%>%
+    select(   Species, `Relative Frequency`, `Citizen Scientist Accuracy`, MP1:E1)->XX
+  
+  return(XX)
+  
+}
+
+SeparateMasterTables_ListW<-map(1:5, SeparateMasterTablesW)
+
+One<-SeparateMasterTables_ListW[[1]][,4:8]
+Two<-SeparateMasterTables_ListW[[2]][,4:8]
+Thr<-SeparateMasterTables_ListW[[3]][,4:8]
+Fou<-SeparateMasterTables_ListW[[4]][,4:8]
+Fiv<-SeparateMasterTables_ListW[[5]][,4:8]
+
+
+AverageAccuracy_Weighted<-bind_cols(SeparateMasterTables_ListW[[1]][,1:3], (One + Two+ Thr+Fou+Fiv)/5)
+```
+### Weighted Results
+
+```{r}
+AverageAccuracy_Weighted %>% knitr::kable(digits = 2)
+
+```
+
+## Randomising Metadata
+
+```{r eval=FALSE}
+Meta_Slots<-list(Location =1:2,
+                 DayOfYear= 3,
+                 Temps = 4:25,
+                 Habitats = 26:46,
+                 DailyTemps = 4:17 ,
+                 WeeklyTemps = 18:25,
+                 RecordExp = 47)
+
+for(RUN in 1:5){
+  
+  K$clear_session()
+  
+  
+  print(paste0('Starting Batch', RUN))
+  
+  load(file =  paste0('../Data/Pre_AccessedMetadata_Label_test_TVT', RUN))
+  Pre_AccessedMetadata_test[[1]]  <- map(Pre_AccessedMetadata_test[[1]] , NAremover)
+  
+  ModelSet<-paste0('TVT_Batch_',RUN)
+  IMAGE_SOURCE <- paste0('../../Images/Batch_TVT',RUN,'/')
+  AllTestImages<-list.files(paste0(IMAGE_SOURCE, 'test/'), recursive = TRUE)
+  TestStepsPerEpoch = length(AllTestImages)/BatchSize 
+  source('Gen_Meta_Test_Speedy.R')  
+  
+  TestOnBatch_randomise<-function(i, Meta_Slots){
+    # takes Gen_Both_Valid,  both_model, image_model and meta_model from the global
+    
+    Test_data<-Gen_Meta_Test_Speedy_Secn()
+    TRUTH<- apply(Test_data[[2]], 1, which.max)    
+    
+    InTop3<- matrix(nrow = 32, ncol = length(Meta_Slots))
+    
+    ## Cycle through each category of meta data, randomising each in turn and predicting
+    for( i in 1:length(Meta_Slots)){
+      
+      meta_matrix<- Test_data[[1]]
+      Slots_to_randomise<-Meta_Slots[[i]]
+      meta_matrix[,Slots_to_randomise] <-  meta_matrix[sample.int(32),Slots_to_randomise] 
+      m_predictions<-as.data.frame(predict(meta_model,meta_matrix))
+      m_predictions$Truth <- TRUTH
+      InTop3[,i] <-apply(m_predictions, 1,function(x){x[19] %in% which(rank(x[-19])>=16)})
+    }
+    df <- as.data.frame(InTop3)
+    colnames(df)<- names(Meta_Slots)
+    df$Truth <- TRUTH
+    
+    ## Add unrandomsed too as baseline
+    un_predictions<-as.data.frame(predict(meta_model,Test_data[[1]]))
+    un_predictions$Truth <- TRUTH
+    df$Unrandomised <-apply(un_predictions, 1,function(x){x[19] %in% which(rank(x[-19])>=16)})
+    
+    cat('.')
+    return(df)
+  }
+  
+  
+  meta_model<- load_model_hdf5(paste0('../../', ModelSet,'/Meta_Model_Secn'))
+  randResults<-map_df(1:TestStepsPerEpoch, TestOnBatch_randomise, Meta_Slots)
+  save(randResults, file= paste0('../Data/',ModelSet,'SecnMetaDataRand'))
+  
+  TestOnBatch_randomise_Primary<-function(i, Meta_Slots){
+    # takes Gen_Both_Valid,  both_model, image_model and meta_model from the global
+    
+    Test_data<-Gen_Meta_Test_Speedy_Prim()
+    TRUTH<- apply(Test_data[[2]], 1, which.max)    
+    
+    InTop3<- matrix(nrow = 32, ncol = length(Meta_Slots))
+    
+    ## Cycle through each category of meta data, randomising each in turn and predicting
+    for( i in 1:length(Meta_Slots)){
+      
+      meta_matrix<- Test_data[[1]]
+      Slots_to_randomise<-Meta_Slots[[i]]
+      meta_matrix[,Slots_to_randomise] <-  meta_matrix[sample.int(32),Slots_to_randomise] 
+      m_predictions<-as.data.frame(predict(meta_model,meta_matrix))
+      m_predictions$Truth <- TRUTH
+      InTop3[,i] <-apply(m_predictions, 1,function(x){x[19] %in% which(rank(x[-19])>=16)})
+    }
+    df <- as.data.frame(InTop3)
+    colnames(df)<- names(Meta_Slots)
+    df$Truth <- TRUTH
+    
+    ## Add unrandomsed too as baseline
+    un_predictions<-as.data.frame(predict(meta_model,Test_data[[1]]))
+    un_predictions$Truth <- TRUTH
+    df$Unrandomised <-apply(un_predictions, 1,function(x){x[19] %in% which(rank(x[-19])>=16)})
+    
+    cat('.')
+    return(df)
+  }
+  
+  meta_model<- load_model_hdf5(paste0('../../', ModelSet,'/Meta_Model_Prim'))
+  randResults<-map_df(1:TestStepsPerEpoch,
+                      TestOnBatch_randomise_Primary,
+                      list('Lat'=1, 'Long' = 2, 'DayOfYear'=3))
+  save(randResults, file= paste0('../Data/',ModelSet,'PrimMetaDataRand'))
+}
+
+```
+
+### Analysing metadata randomisation
+
+```{r}
+
+MetaSecnRandomisation_Overall<-map_df(1:5, function(RUN){
+  ModelSet<-paste0('TVT_Batch_',RUN)
+  load(paste0('../Data/',ModelSet,'SecnMetaDataRand'))
+  
+  randResults%>%
+    select(-Truth)%>%
+    colMeans()%>% t %>%
+    as.data.frame()
+})
+
+MetaSecnRandomisation_Overall
+
+MetaSecnRandomisation_Overall %>% colMeans %>% 
+  knitr::kable(digits = 3)
+
+
+
+MetaSecnRand_BySpecies_list<-map(1:5, function(RUN){
+  ModelSet<-paste0('TVT_Batch_',RUN)
+  load(paste0('../Data/',ModelSet,'SecnMetaDataRand'))
+  
+  randResults%>%
+    group_by(Truth)%>%
+    summarise( Location = mean( Location)*100,
+               DayOfYear= mean( DayOfYear)*100,
+               Temps= mean(Temps )*100,
+               Habitats= mean(Habitats )*100,
+               DailyTemps= mean( DailyTemps)*100,
+               WeeklyTemps= mean(WeeklyTemps )*100,
+               RecordExp= mean( RecordExp)*100,
+               Unrandomised= mean(Unrandomised )*100)%>%
+    left_join(Name_id, by = c('Truth'= 'SpN')) -> RandomisedAccBySp
+    return(RandomisedAccBySp)
+})
+
+
+
+One<-MetaSecnRand_BySpecies_list[[1]][,2:9]
+Two<-MetaSecnRand_BySpecies_list[[2]][,2:9]
+Thr<-MetaSecnRand_BySpecies_list[[3]][,2:9]
+Fou<-MetaSecnRand_BySpecies_list[[4]][,2:9]
+Fiv<-MetaSecnRand_BySpecies_list[[5]][,2:9]
+
+AvAccBySp<- bind_cols(MetaSecnRand_BySpecies_list[[1]][,10], (One + Two+ Thr+Fou+Fiv)/5)
+
+AvAccBySp%>%knitr::kable(digits=1)
+
+AvAccBySp %>%
+    gather(Metadata , Acc, Location:RecordExp)%>%
+    mutate(AccDecrease = 100*(Unrandomised-Acc)/Unrandomised)%>%
+    select(Name,Unrandomised, Metadata   , AccDecrease)%>%
+    spread(Metadata, AccDecrease) -> AvAccDecBySp
+
+
+  AvAccDecBySp %>%knitr::kable(digits=1)
+```
+
+#### Sort by Each of the Categories
+
+```{r}
+AvAccDecBySp%>% select(Name, Unrandomised,Habitats) %>% arrange(desc(Habitats))%>% knitr::kable(digits = 1)
+
+AvAccDecBySp%>% select(Name, Unrandomised,Location) %>% arrange(desc(Location))%>% knitr::kable(digits = 1)
+AvAccDecBySp%>% select(Name, Unrandomised,Temps) %>% arrange(desc(Temps))%>% knitr::kable(digits = 1)
+
+RecExEffect<- AvAccDecBySp%>% 
+  select(Name,Unrandomised  ,RecordExp) %>%
+  left_join( select( AverageAccuracy,Species ,`Relative Frequency`),
+             by = c('Name'= 'Species'))%>%
+  arrange(desc(RecordExp))
+
+RecExEffect%>% knitr::kable(digits = 1)
+
+RecExEffect%>% 
+  ggplot(aes(x=`Relative Frequency`, y=RecordExp))+
+  geom_point()+
+  scale_x_log10()+
+  geom_text(aes(label = Name),check_overlap = TRUE  )+
+  ylab('Decrease In Accuracy When Recorder Experience Randomised')
+```
+
+## Randomising With Primary Metadata only
+
+```{r}
+
+MetaPrimRandomisation_Overall<-map_df(1:5, function(RUN){
+  ModelSet<-paste0('TVT_Batch_',RUN)
+  load(paste0('../Data/',ModelSet,'PrimMetaDataRand'))
+  
+  randResults%>%
+    select(-Truth)%>%
+    colMeans()%>% t %>%
+    as.data.frame()
+})
+
+MetaPrimRandomisation_Overall
+
+MetaPrimRandomisation_Overall %>% colMeans %>% knitr::kable(digits = 3)
+
+```
+
+
+
+
