@@ -617,6 +617,29 @@ ggsave('../Figures/Comparison OfAccuracies13.png', width = 6, height = 4, units=
 ggsave('../Figures/Comparison OfAccuracies13.pdf', width = 6, height = 4, units='in')
 
 
+### Basic Stats
+
+t.test(OverallResults$Accuracy[1:5], OverallResults$Accuracy[11:15],  paired = TRUE) # image vs ensemble
+t.test(OverallResults$Accuracy[11:15], OverallResults$Accuracy[6:10],  paired = TRUE) # ensemble vs combined
+
+t.test(OverallResults$Top3Acc[1:5], OverallResults$Top3Acc[11:15],  paired = TRUE)  # image vs ensemble
+t.test(OverallResults$Top3Acc[11:15], OverallResults$Top3Acc[6:10],  paired = TRUE) # ensemble vs combined
+
+OverallResults %>%
+  gather('Acc_Measure', 'Acc', Accuracy, Top3Acc)%>%
+  ungroup()%>%
+  filter(Metric != 'I1')%>%
+  mutate(RUN = as.character(RUN),
+         ModelType = Metric)  %>%
+  spread('Metric', 'Acc')
+
+BvE_Improve<- data.frame( AccuracyDiff_BvE =  c(OverallResults$Accuracy[6:10]-OverallResults$Accuracy[11:15] ,
+                                                OverallResults$Top3Acc[6:10]- OverallResults$Top3Acc[11:15]),
+                          Metric = c(rep('Top1',5), rep('Top3',5)) )
+
+
+lm( AccuracyDiff_BvE~ Metric   ,  BvE_Improve) %>% summary
+
 ```
 
 ### Weighted Performance:
