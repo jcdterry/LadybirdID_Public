@@ -617,13 +617,15 @@ ggsave('../Figures/Comparison OfAccuracies13.png', width = 6, height = 4, units=
 ggsave('../Figures/Comparison OfAccuracies13.pdf', width = 6, height = 4, units='in')
 
 
-### Basic Stats
+### Basic Stats (one sided paired t-tests)
 
-t.test(OverallResults$Accuracy[1:5], OverallResults$Accuracy[11:15],  paired = TRUE) # image vs ensemble
-t.test(OverallResults$Accuracy[11:15], OverallResults$Accuracy[6:10],  paired = TRUE) # ensemble vs combined
+t.test(OverallResults$Accuracy[1:5], OverallResults$Accuracy[11:15],  paired = TRUE, alternative = 'less') # image vs ensemble
+t.test(OverallResults$Accuracy[11:15], OverallResults$Accuracy[6:10],  paired = TRUE, alternative = 'less') # ensemble vs combined
+t.test(OverallResults$Accuracy[1:5], OverallResults$Accuracy[6:10],  paired = TRUE, alternative = 'less') # ensemble vs combined
 
-t.test(OverallResults$Top3Acc[1:5], OverallResults$Top3Acc[11:15],  paired = TRUE)  # image vs ensemble
-t.test(OverallResults$Top3Acc[11:15], OverallResults$Top3Acc[6:10],  paired = TRUE) # ensemble vs combined
+t.test(OverallResults$Top3Acc[1:5], OverallResults$Top3Acc[11:15],  paired = TRUE, alternative = 'less')  # image vs ensemble
+t.test(OverallResults$Top3Acc[11:15], OverallResults$Top3Acc[6:10],  paired = TRUE, alternative = 'less') # ensemble vs combined
+t.test(OverallResults$Top3Acc[1:5], OverallResults$Top3Acc[6:10],  paired = TRUE, alternative = 'less') # ensemble vs combined
 
 OverallResults %>%
   gather('Acc_Measure', 'Acc', Accuracy, Top3Acc)%>%
